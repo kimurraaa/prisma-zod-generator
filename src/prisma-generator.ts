@@ -427,7 +427,7 @@ export async function generate(options: GeneratorOptions) {
         );
 
       const allModelEnums = [...(mutableEnumTypes.model ?? []), ...transformedDatamodelEnums];
-      await generateEnumSchemas(mutableEnumTypes.prisma, allModelEnums);
+      await generateEnumSchemas(mutableEnumTypes.prisma, allModelEnums, generatorConfig);
     } else {
       logger.debug('[prisma-zod-generator] ⏭️  emit.enums=false (skipping enum schemas)');
     }
@@ -835,8 +835,14 @@ function normalizeSchemaEnum(enumType: {
 async function generateEnumSchemas(
   prismaSchemaEnum: SchemaEnumWithValues[],
   modelSchemaEnum: SchemaEnumWithValues[],
+  generatorConfig: CustomGeneratorConfig,
 ) {
-  const enumTypes = [...prismaSchemaEnum, ...modelSchemaEnum];
+  // Determine the enum generation strategy from configuration
+  const strategy = generatorConfig?.enumStrategy || 'full';
+  // If strategy is set to 'datamode', filter out Prisma's internal query/internal enums
+  // (like ScalarFieldEnum) and generate schemas ONLY for enums declared in schema.prisma
+  const enumTypes =
+    strategy === 'datamode' ? [...modelSchemaEnum] : [...prismaSchemaEnum, ...modelSchemaEnum];
   // Include both raw and normalized enum names so import/name checks work
   const rawEnumNames = enumTypes.map((e) => e.name);
 
@@ -2067,9 +2073,8 @@ async function generateVariantSchemaContent(
   if (enumTypes.length > 0) {
     const importExtension = Transformer.getImportFileExtension();
     try {
-      const { resolveEnumNaming, generateFileName, generateExportName } = await import(
-        './utils/naming-resolver'
-      );
+      const { resolveEnumNaming, generateFileName, generateExportName } =
+        await import('./utils/naming-resolver');
       const enumNaming = resolveEnumNaming(config);
       enumImportLines =
         enumTypes
