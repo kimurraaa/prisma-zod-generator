@@ -645,11 +645,6 @@ export async function generate(options: GeneratorOptions) {
       logger.debug('[prisma-zod-generator] ⏭️  emit.crud=false (skipping CRUD operation schemas)');
     }
 
-    // Only create objects index if objects or crud emitted (legacy expectation)
-    if ((emitObjects || emitCrud) && !shouldSkipCrudAndObjectsDueToHeuristics) {
-      await generateIndex();
-    }
-
     if (emitPureModels) {
       logger.debug(
         `[debug] Before pure model generation: pureModels=${String(generatorConfig.pureModels || emitPureModels)} namingPreset=${generatorConfig.naming?.preset || 'none'}`,
@@ -670,6 +665,11 @@ export async function generate(options: GeneratorOptions) {
       logger.debug(
         '[prisma-zod-generator] ⏭️  emit.variants=false (skipping variant wrapper schemas)',
       );
+    }
+    try {
+      await generateIndex();
+    } catch (error) {
+      console.error('[prisma-zod-generator] ⚠️ Failed to generate root index:', error);
     }
 
     // Result schemas are generated inside Transformer.generateResultSchemas; we guard via emit.results if specified
@@ -835,10 +835,10 @@ function normalizeSchemaEnum(enumType: {
 async function generateEnumSchemas(
   prismaSchemaEnum: SchemaEnumWithValues[],
   modelSchemaEnum: SchemaEnumWithValues[],
-  generatorConfig: CustomGeneratorConfig,
+  config: CustomGeneratorConfig,
 ) {
   // Determine the enum generation strategy from configuration
-  const strategy = generatorConfig?.enumStrategy || 'full';
+  const strategy = config?.enumStrategy || 'full';
   // If strategy is set to 'datamode', filter out Prisma's internal query/internal enums
   // (like ScalarFieldEnum) and generate schemas ONLY for enums declared in schema.prisma
   const enumTypes =
@@ -873,7 +873,58 @@ async function generateEnumSchemas(
     enumTypes,
   });
   await transformer.generateEnumSchemas();
+  await generateEnumsIndex();
 }
+
+/**
+ * Generate an index.ts inside the enums directory and add it to the main index
+ */
+async function generateEnumsIndex() {
+  try {
+    const schemasPath = Transformer.getSchemasPath();
+    const enumsDir = path.join(schemasPath, 'enums');
+
+    try {
+      await fs.mkdir(enumsDir, { recursive: true });
+    } catch {}
+
+    let entries: string[] = [];
+
+    try {
+      const dirents = await fs.readdir(enumsDir, { withFileTypes: true });
+      entries = dirents
+        .filter((d) => d.isFile() && d.name.endsWith('.ts') && d.name !== 'index.ts')
+        .map((d) => d.name.replace(/\.ts$/, ''));
+    } catch {
+      entries = [];
+    }
+
+    if (entries.length === 0) return;
+
+    const importExtension = Transformer.getImportFileExtension();
+    const exportLines = entries.map((base) => `export * from './${base}${importExtension}';`);
+
+    const content = [
+      '/**',
+      ' * Enum Schemas Index',
+      ' * Auto-generated - do not edit manually',
+      ' */',
+      '',
+      ...exportLines,
+      '',
+    ].join('\n');
+
+    const indexPath = path.join(enumsDir, 'index.ts');
+
+    await writeFileSafely(indexPath, content, false);
+
+    const { addIndexExport } = await import('./utils/writeIndexFile');
+    addIndexExport(indexPath);
+  } catch (err) {
+    console.error('⚠️  Failed to generate enums index:', err);
+  }
+}
+
 
 async function generateObjectSchemas(inputObjectTypes: DMMF.InputType[], models: DMMF.Model[]) {
   // Debug: List all UpdateManyWithWhere types in DMMF
